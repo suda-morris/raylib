@@ -2927,6 +2927,24 @@ static bool sw_polygon_clip(sw_vertex_t polygon[SW_MAX_CLIPPED_POLYGON_VERTICES]
 
     int n = *vertexCounter;
 
+    // Fast path: every vertex is inside every frustum plane, so the seven
+    // per-plane passes (dominated by whole-vertex struct copies) would be a
+    // no-op. Scissor planes need their own check, so bail to the slow path
+    // when the test is enabled.
+    if (!(RLSW.userState & SW_STATE_SCISSOR_TEST))
+    {
+        bool allInside = true;
+        for (int i = 0; allInside && (i < n); i++)
+        {
+            const float *h = polygon[i].position;
+            allInside = (h[3] >= SW_CLIP_EPSILON)
+                     && ((h[0] < h[3]) && (-h[0] < h[3]))
+                     && ((h[1] < h[3]) && (-h[1] < h[3]))
+                     && ((h[2] <= h[3]) && (-h[2] <= h[3]));
+        }
+        if (allInside) return true;
+    }
+
     #define CLIP_AGAINST_PLANE(FUNC_CLIP)                       \
     {                                                           \
         n = FUNC_CLIP(tmp, polygon, n);                         \
@@ -3823,6 +3841,40 @@ static void sw_immediate_push_vertex(const float position[4])
             else if ((RLSW.blendFlags & SW_BLEND_FLAG_NEEDS_ALPHA) && (!RLSW.primitive.hasColorAlpha))
             {
                 if (!(state & SW_STATE_TEXTURE_2D) || (RLSW.boundTexture->alpha == SW_PIXEL_ALPHA_NONE)) state &= ~SW_STATE_BLEND;
+            }
+        }
+
+        // A point-filtered texture whose vertex UVs all resolve to the same
+        // opaque texel (raylib's shape texture: a 1x1 rect inside the default
+        // font atlas) samples a constant: fold it into the vertex colors once
+        // and drop the per-pixel sampler call. Only an opaque texel folds, so
+        // the blend decision above stays valid.
+        if ((state & SW_STATE_TEXTURE_2D)
+            && (RLSW.boundTexture->minFilter != SW_LINEAR)
+            && (RLSW.boundTexture->magFilter != SW_LINEAR))
+        {
+            sw_texture_t *tex = RLSW.boundTexture;
+            float texel[4], corner[4];
+            sw_texture_sample_nearest(texel, tex,
+                                      RLSW.primitive.buffer[0].texcoord[0],
+                                      RLSW.primitive.buffer[0].texcoord[1]);
+
+            bool constant = (texel[3] >= 1.0f);
+            for (int i = 1; constant && (i < RLSW.primitive.vertexCount); ++i)
+            {
+                sw_texture_sample_nearest(corner, tex,
+                                          RLSW.primitive.buffer[i].texcoord[0],
+                                          RLSW.primitive.buffer[i].texcoord[1]);
+                SW_VEC_OP(if (corner[j] != texel[j]) constant = false;, j, 4);
+            }
+
+            if (constant)
+            {
+                for (int i = 0; i < RLSW.primitive.vertexCount; ++i)
+                {
+                    SW_VEC_OP(RLSW.primitive.buffer[i].color[j] *= texel[j], j, 4);
+                }
+                state &= ~SW_STATE_TEXTURE_2D;
             }
         }
 

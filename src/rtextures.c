@@ -676,6 +676,8 @@ bool ExportImage(Image image, const char *fileName)
         allocatedData = true;
     }
 
+    (void)channels; // Never read when all export formats below are disabled
+
     if (false) { } // Required to attach following 'else' cases
 #if SUPPORT_FILEFORMAT_PNG
     else if (IsFileExtension(fileName, ".png"))
